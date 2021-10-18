@@ -17,6 +17,7 @@
 package exporter
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io/ioutil"
@@ -28,6 +29,8 @@ import (
 
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.mongodb.org/mongo-driver/mongo/readpref"
 
 	"github.com/percona/mongodb_exporter/internal/tu"
 )
@@ -86,7 +89,7 @@ func TestConnect(t *testing.T) {
 			log.Fatal(err)
 		}
 
-		ts := httptest.NewServer(e.handler())
+		ts := httptest.NewServer(e.Handler())
 		defer ts.Close()
 
 		var wg sync.WaitGroup
@@ -122,7 +125,7 @@ func TestConnect(t *testing.T) {
 			log.Fatal(err)
 		}
 
-		ts := httptest.NewServer(e.handler())
+		ts := httptest.NewServer(e.Handler())
 		defer ts.Close()
 
 		var wg sync.WaitGroup
@@ -202,5 +205,72 @@ func TestMongoS(t *testing.T) {
 		assert.Equal(t, test.want, res)
 		err = client.Disconnect(ctx)
 		assert.NoError(t, err)
+	}
+}
+
+func TestGatherWhileDisconnected(t *testing.T) {
+	hostname := "127.0.0.1"
+	ctx := context.Background()
+
+	ports := map[string]string{
+		"standalone":          tu.GetenvDefault("TEST_MONGODB_STANDALONE_PORT", "27017"),
+		"shard-1 primary":     tu.GetenvDefault("TEST_MONGODB_S1_PRIMARY_PORT", "17001"),
+		"shard-1 secondary-1": tu.GetenvDefault("TEST_MONGODB_S1_SECONDARY1_PORT", "17002"),
+		"shard-1 secondary-2": tu.GetenvDefault("TEST_MONGODB_S1_SECONDARY2_PORT", "17003"),
+		"shard-2 primary":     tu.GetenvDefault("TEST_MONGODB_S2_PRIMARY_PORT", "17004"),
+		"shard-2 secondary-1": tu.GetenvDefault("TEST_MONGODB_S2_SECONDARY1_PORT", "17005"),
+		"shard-2 secondary-2": tu.GetenvDefault("TEST_MONGODB_S2_SECONDARY2_PORT", "17006"),
+		"config server 1":     tu.GetenvDefault("TEST_MONGODB_CONFIGSVR1_PORT", "17007"),
+		"mongos":              tu.GetenvDefault("TEST_MONGODB_MONGOS_PORT", "17000"),
+	}
+
+	logger := logrus.New()
+	logger.SetOutput(ioutil.Discard)
+
+	for name, port := range ports {
+		t.Run("Gather with no connection on "+name, func(t *testing.T) {
+			testPort := port
+			dsn := fmt.Sprintf("mongodb://%s:%s/admin?connectTimeoutMS=10&serverSelectionTimeoutMS=10", hostname, testPort)
+			opts := &Opts{
+				CompatibleMode:          true,
+				DiscoveringMode:         true,
+				GlobalConnPool:          true, // to not to reconnect
+				DirectConnect:           true, // do not use other instances in the replicaset
+				URI:                     dsn,
+				Path:                    "", // Path and WebListenAddress are not important
+				WebListenAddress:        "", // because we will use a testing HTTP server below
+				IndexStatsCollections:   []string{},
+				CollStatsCollections:    []string{},
+				Logger:                  logger,
+				DisableDiagnosticData:   false,
+				DisableReplicasetStatus: false,
+				DisableDefaultRegistry:  false,
+				EnableDBStats:           true,
+			}
+
+			exp, err := New(opts)
+			assert.NoError(t, err)
+
+			err = exp.client.Disconnect(ctx)
+			assert.NoError(t, err, name)
+			err = exp.client.Ping(ctx, readpref.Nearest())
+			require.Error(t, err)
+
+			ts := httptest.NewServer(exp.Handler())
+			defer ts.Close()
+
+			res, err := http.Get(ts.URL)
+			assert.NoError(t, err)
+
+			g, err := ioutil.ReadAll(res.Body)
+			assert.NoError(t, err)
+
+			err = res.Body.Close()
+			assert.NoError(t, err)
+			assert.NotEmpty(t, g)
+
+			want := []byte(`mongodb_mongod_replset_my_state{set=""} 6`)
+			assert.True(t, bytes.Contains(g, want))
+		})
 	}
 }

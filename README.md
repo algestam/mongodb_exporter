@@ -60,6 +60,26 @@ Just run `make release` and the new binaries will be generated under the build d
 ### Running the exporter
 If you built the exporter using the method mentioned in the previous section, the generated binaries are in `mongodb_exporter_linux_amd64/mongodb_exporter` or `mongodb_exporter_darwin_amd64/mongodb_exporter`
 
+#### Docker
+
+A docker image is available on [docker hub](https://hub.docker.com/repository/docker/percona/mongodb_exporter).
+
+#### Permissions
+Connecting user should have sufficient rights to query needed stats:
+
+```
+      {
+         "role":"clusterMonitor",
+         "db":"admin"
+      },
+      {
+         "role":"read",
+         "db":"local"
+      }
+```
+
+More info about roles in MongoDB [documentation](https://docs.mongodb.com/manual/reference/built-in-roles/#mongodb-authrole-clusterMonitor).
+
 #### Example
 ```
 mongodb_exporter_linux_amd64/mongodb_exporter --mongodb.uri=mongodb://127.0.0.1:17001
@@ -84,6 +104,24 @@ HELP mongodb_mongod_wiredtiger_log_bytes_total mongodb_mongod_wiredtiger_log_byt
 # TYPE mongodb_mongod_wiredtiger_log_bytes_total untyped
 mongodb_mongod_wiredtiger_log_bytes_total{type="unwritten"} 2.6208e+06
 ```
+
+#### Cluster role labels
+The exporter sets some topology labels in all metrics.
+The labels are:
+
+- cl_role: Cluster role according to this table:
+
+|Server type|Label|
+|-----|-----|
+|mongos|mongos|
+|regular instance (primary or secondary)|shardsvr|
+|arbiter|shardsvr|
+|standalone|(empty string)|
+
+- cl_id: Cluster ID
+- rs_nm: Replicaset name
+- rs_state: Replicaset state is an integer from `getDiagnosticData()` -> `replSetGetStatus.myState`. 
+Check [the official documentation](https://docs.mongodb.com/manual/reference/replica-states/) for details on replicaset status values.
 
 ## Submitting Bug Reports and adding new functionality
 
